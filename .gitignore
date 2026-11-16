@@ -1,0 +1,20 @@
+# Reference repos (cloned for study)
+.reference-*
+
+# Build output
+build/
+
+# Research sample files
+.sample_*
+.mega_script.js
+.buscador_avanzado.js
+.funcionesT3.js
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
