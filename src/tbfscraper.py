@@ -488,7 +488,7 @@ def query_issue_refs(series_ref, callback=None):
                 num_match = RE_CAPTION_NUMBER.match(
                     _text(re.split(r'(?i)<br\s*/?>', m.group(3), 1)[0]))
                 num = num_match.group(0).strip() if num_match else ''
-                # "nº 3" -> "3"
+                # "n<ordinal sign> 3" -> "3"
                 num = re.sub(r'(?i)^n(?:\xba|\xb0|o\.?)\s*', '', num)
                 if not num:
                     num = '1' if len(gallery) == 1 else ''
