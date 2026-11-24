@@ -318,7 +318,7 @@ def parse_search_results(html):
         yp = RE_NAME_YEAR_PUB.search(label)
         if yp:
             year = int(yp.group(1))
-            publisher = yp.group(2).strip()
+            publisher = _publisher_name(yp.group(2).strip())
 
         count_m = RE_RESULT_COUNT.search(row)
         count = int(count_m.group(1)) if count_m else 0
@@ -340,6 +340,25 @@ def parse_search_results(html):
 
 
 # ===========================================================================
+def _publisher_name(name):
+    """
+    Title-cases an ALL-CAPS publisher ("PLANETA DE AGOSTINI" -> "Planeta de
+    Agostini") but keeps short words ("DC", "EDT", "RBA", "ECC") upper-case,
+    as they are usually acronyms. Mixed-case names are returned unchanged.
+    """
+    if not utils.is_all_caps(name):
+        return name
+    words = []
+    for i, word in enumerate(name.split(' ')):
+        bare = word.strip(u'.,;:()[]"\'')
+        if 1 < len(bare) <= 3 and bare.lower() not in utils._SMALL_WORDS:
+            words.append(word)
+        elif i > 0 and bare.lower() in utils._SMALL_WORDS:
+            words.append(word.lower())
+        else:
+            words.append(utils.smart_title(word))
+    return ' '.join(words)
+
 def normalize_title(text):
     '''
     Lower-cases, strips accents and punctuation, and drops a leading or
@@ -448,6 +467,33 @@ def query_issue_refs(series_ref, callback=None):
                 else:
                     continue
                 seen.add(slug)
+                cover, title, date = gallery.get(slug, none)
+                results.add(IssueRef(
+                    issue_num_s=num,
+                    issue_key=slug,
+                    title_s=title,
+                    date_s=date,
+                    thumb_url_s=cover,
+                    url_s=full_url('/numeros/%s.html' % slug)))
+
+        # An issue's slug can end in a different publisher than the
+        # collection's ("..._2026_cartem" collection, "..._2026_panini"
+        # issue), so the slug match above finds nothing. The gallery only
+        # lists this collection's own issues, so use it as a last resort.
+        if not results:
+            for m in RE_GALLERY_ITEM.finditer(html):
+                slug = m.group(2)
+                if any(r.issue_key == slug for r in results):
+                    continue
+                num_match = RE_CAPTION_NUMBER.match(
+                    _text(re.split(r'(?i)<br\s*/?>', m.group(3), 1)[0]))
+                num = num_match.group(0).strip() if num_match else ''
+                # "nº 3" -> "3"
+                num = re.sub(r'(?i)^n(?:\xba|\xb0|o\.?)\s*', '', num)
+                if not num:
+                    num = '1' if len(gallery) == 1 else ''
+                if not num:
+                    continue
                 cover, title, date = gallery.get(slug, none)
                 results.add(IssueRef(
                     issue_num_s=num,
@@ -782,7 +828,7 @@ def parse_issue_page(html, issue):
     # the distributor and printer).
     entities = _link_texts(body, 'entidades')
     if entities:
-        issue.publisher_s = entities[0]
+        issue.publisher_s = _publisher_name(entities[0])
 
     fields = _data_fields(body)
     _apply_date(_text(fields.get('distribucion')), issue)
@@ -904,7 +950,7 @@ def parse_collection_page_for_issue(html, issue):
         # e.g. "GRUPO EDITORIAL BRUNO : SALVAT" -> the last one is the label
         entities = _link_texts(_div_by_id(html, 'cuerpo1_ficha'), 'entidades')
         if entities:
-            issue.publisher_s = entities[-1]
+            issue.publisher_s = _publisher_name(entities[-1])
 
     fields = _data_fields(_div_by_id(html, 'cuerpo2_ficha'))
     if issue.pub_year_n == -1:
