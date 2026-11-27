@@ -16,10 +16,71 @@ from configuration import Configuration
 clr.AddReference('System.Windows.Forms')
 from System.Windows.Forms import TabControl, TabPage, CheckedListBox, \
     CheckBox, TextBox, Label, Button, DialogResult, GroupBox, \
-    CheckState, DockStyle, ScrollBars, Keys
+    CheckState, DockStyle, ScrollBars, Keys, ComboBox, ComboBoxStyle
+
+from System.Windows.Forms import TextRenderer, TextFormatFlags
 
 clr.AddReference('System.Drawing')
-from System.Drawing import Size, Point, Font, FontStyle, FontFamily
+from System.Drawing import Size, Point, Font, FontStyle, FontFamily, \
+    Rectangle, ContentAlignment
+
+
+# ===========================================================================
+# Text that fits at 96 DPI can need more room on other displays: if the font
+# is scaled for the display but the layout isn't (or less), a fixed-size
+# label hides its last line and a checkbox cuts off the end of its text.
+# The Behavior and Credits tabs are laid out by stack_layout instead, which
+# gives each label and checkbox the height its wrapped text needs.
+def _text_height(control, width):
+    '''The height control needs to show all its text, wrapped at width.'''
+    if isinstance(control, Label):
+        return control.GetPreferredSize(Size(width, 0)).Height
+    if isinstance(control, CheckBox):
+        one_line = control.GetPreferredSize(Size.Empty)
+        text = TextRenderer.MeasureText(control.Text, control.Font)
+        box = one_line.Width - text.Width        # the tick box and spacing
+        wrapped = TextRenderer.MeasureText(control.Text, control.Font,
+                                           Size(width - box, 0),
+                                           TextFormatFlags.WordBreak)
+        # at least a normal checkbox row (23 px at 96 DPI for an 8pt font)
+        return max(control.Font.Height + 10,
+                   wrapped.Height + one_line.Height - text.Height)
+    return control.Height
+def stack_layout(page, items):
+    '''
+    Places items, a list of (control, space above it at 96 DPI), one under
+    another down the page, each as wide as the page allows (keeping its
+    left margin; a ComboBox keeps its own width) and, for labels and
+    checkboxes, as tall as its text needs. Re-done whenever the page lays
+    out, so a font or DPI change is followed.
+    '''
+    busy = []
+    def layout(sender, event):
+        if busy:
+            return                  # moving controls lays the page out again
+        busy.append(True)
+        try:
+            scale = page.Font.Height / 13.0     # 13 px: 8pt font at 96 DPI
+            y = 0
+            for control, space in items:
+                y += int(round(space * scale))
+                x = control.Left
+                width = control.Width if isinstance(control, ComboBox) \
+                    else page.ClientSize.Width - 2 * x
+                if width <= 0:
+                    return
+                height = _text_height(control, width)
+                if isinstance(control, CheckBox):
+                    wraps = height > control.Font.Height + 10
+                    control.CheckAlign = ContentAlignment.TopLeft if wraps \
+                        else ContentAlignment.MiddleLeft
+                    control.TextAlign = control.CheckAlign
+                if control.Bounds != Rectangle(x, y, width, height):
+                    control.SetBounds(x, y, width, height)
+                y += height
+        finally:
+            del busy[:]
+    page.Layout += layout
 
 
 # ===========================================================================
@@ -27,6 +88,11 @@ class ConfigForm(CVForm):
     '''
     A tabbed configuration dialog for the Tebeosfera Scraper.
     '''
+
+    # In the order of the credit_name_style_n setting
+    NAME_STYLES = ['Signature', 'Real name', 'Signature (Real name)',
+                   'Real name (Signature)', 'Signature (Real name) [Smart]',
+                   'Real name (Signature) [Smart]']
 
     def __init__(self, parent=None):
         super(ConfigForm, self).__init__(parent, 'configform_loc', 'configform_sz')
@@ -119,7 +185,9 @@ class ConfigForm(CVForm):
              'Only set Title if it differs from the Series'),
             ('set_spanish_language_b', 'Set language to Spanish if the book has none'),
         ]
-        self.__add_checkboxes(tab_behavior, behavior_items)
+        boxes = self.__add_checkboxes(tab_behavior, behavior_items)
+        stack_layout(tab_behavior, [(cb, 8 if i == 0 else 1)
+                                    for i, cb in enumerate(boxes)])
         self.__tabs.Controls.Add(tab_behavior)
 
         # --- Tab 3: Credits ---
@@ -144,7 +212,30 @@ class ConfigForm(CVForm):
             ('copy_penciller_to_colorist_b',
              'Use penciller as colorist if none is credited (colour comics only)'),
         ]
-        self.__add_checkboxes(tab_credits, credits_items, top=48)
+        boxes = self.__add_checkboxes(tab_credits, credits_items, top=48)
+        # Some authors sign their work with a name other than their own
+        style_label = Label()
+        style_label.Text = ('Authors whose signature differs from their real '
+                            'name are credited as:')
+        style_label.Location = Point(10, 160)
+        style_label.Size = Size(480, 20)
+        tab_credits.Controls.Add(style_label)
+        self.__style_label = style_label
+        self.__name_style = ComboBox()
+        self.__name_style.DropDownStyle = ComboBoxStyle.DropDownList
+        self.__name_style.Location = Point(10, 183)
+        self.__name_style.Size = Size(300, 24)
+        for text in self.NAME_STYLES:
+            self.__name_style.Items.Add(text)
+        style = self.__config.credit_name_style_n
+        self.__name_style.SelectedIndex = \
+            style if 0 <= style < len(self.NAME_STYLES) else 0
+        tab_credits.Controls.Add(self.__name_style)
+        # Fixed positions above are the 96 DPI layout before the first
+        # layout pass; from then on stack_layout places everything.
+        stack_layout(tab_credits, [(credits_note, 8)] +
+                     [(cb, 8 if i == 0 else 1) for i, cb in enumerate(boxes)] +
+                     [(style_label, 16), (self.__name_style, 3)])
         self.__tabs.Controls.Add(tab_credits)
 
         # --- Tab 3: Advanced ---
@@ -199,7 +290,11 @@ class ConfigForm(CVForm):
 
     # =========================================================================
     def __add_checkboxes(self, tab, items, top=8):
-        '''Adds one checkbox per (setting, label) to the tab, 24px apart.'''
+        '''
+        Adds one checkbox per (setting, label) to the tab, 24px apart, and
+        returns them.
+        '''
+        boxes = []
         for i, (key, label) in enumerate(items):
             cb = CheckBox()
             cb.Text = label
@@ -208,6 +303,8 @@ class ConfigForm(CVForm):
             cb.Checked = getattr(self.__config, key, False)
             self.__behavior_checks[key] = cb   # all saved by __on_ok
             tab.Controls.Add(cb)
+            boxes.append(cb)
+        return boxes
 
     # =========================================================================
     def __on_field_check(self, sender, event):
@@ -230,6 +327,7 @@ class ConfigForm(CVForm):
         for key, cb in self.__behavior_checks.items():
             setattr(self.__config, key, cb.Checked)
 
+        self.__config.credit_name_style_n = self.__name_style.SelectedIndex
         # Read advanced settings
         self.__config.advanced_settings_s = self.__adv_text.Text
         self.__config.parse_advanced_settings()

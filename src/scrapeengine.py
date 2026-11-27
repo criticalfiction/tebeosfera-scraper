@@ -211,7 +211,8 @@ class ScrapeEngine(object):
         if issue_ref and fast_rescrape_b:
             log.debug('Fast rescrape: %s' % sstr(issue_ref))
             try:
-                issue = tbfscraper.query_issue(issue_ref)
+                issue = tbfscraper.query_issue(
+                    issue_ref, name_style=self.config.credit_name_style_n)
                 book.update(issue)
                 return BookStatus("SCRAPED")
             except:
@@ -331,7 +332,8 @@ class ScrapeEngine(object):
             if issue_ref is not None:
                 # Fetch and apply the issue data
                 log.debug('Querying tebeosfera for issue details...')
-                issue = tbfscraper.query_issue(issue_ref)
+                issue = tbfscraper.query_issue(
+                    issue_ref, name_style=self.config.credit_name_style_n)
                 book.update(issue)
                 return BookStatus("SCRAPED")
 

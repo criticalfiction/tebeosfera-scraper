@@ -209,6 +209,133 @@ tbf.parse_issue_page(bw_page, bwi2)
 check('B&W historietista: no colorist', (bwi2.black_and_white, bwi2.colorists_sl), (True, []))
 check('B&W historietista: still inker', bwi2.inkers_sl, ['Ana'])
 
+print('--- issue titles')
+T = tbf._issue_title
+check('just a title', T('MIEDO'), 'Miedo')
+check('series, line break, own title',
+      T('<span style="color:#999">EL CAPITAN TRUENO</span><br>EL COMBATE POR SIGRIDSHOLM'),
+      'El Combate por Sigridsholm')
+check('edition note in its own div: the note is the title',
+      T('CALAVERA LUNAR<div><strong>especial 25 aniversario</strong></div>'),
+      'Especial 25 aniversario')
+check('own title and a note', T('<span>X</span><br>OWN TITLE<div>NOTA</div>'),
+      'Own Title (Nota)')
+check('empty note div ignored', T('MIEDO<div></div>'), 'Miedo')
+cal = tbf.query_issue(tbf.IssueRef('1', 'x', url_s=
+      'https://www.tebeosfera.com/numeros/calavera_lunar_2022_astiberri.html'))
+check('live: the note is the title', cal.title_s, 'Especial 25 aniversario')
+check('live: series', cal.series_name_s, 'Calavera Lunar')
+b = scrape(cal, fake_book())
+check('title differs from the series, so it is set', b.Title,
+      'Especial 25 aniversario')
+print('--- live: Yo, Julio Cesar (2025, Reservoir)')
+yjc_ref = tbf.IssueRef('1', 'x', url_s=
+    'https://www.tebeosfera.com/numeros/yo_julio_cesar_2025_reservoir.html')
+yjc = tbf.query_issue(yjc_ref)
+check('publisher is the imprint, not the group', yjc.publisher_s, 'Reservoir Books')
+check('trailing dash dropped from the name', yjc.pencillers_sl, [u'N\xe9vil'])
+check('colorist (signature, the default)', yjc.colorists_sl, [u'1ver2\xe2nes'])
+for style, want in [(tbf.NAME_REAL, u'V\xe9rane \xd3tero'),
+                    (tbf.NAME_SIGNATURE_REAL, u'1ver2\xe2nes (V\xe9rane \xd3tero)'),
+                    (tbf.NAME_REAL_SIGNATURE, u'V\xe9rane \xd3tero (1ver2\xe2nes)')]:
+    check('colorist, name style %d' % style,
+          tbf.query_issue(yjc_ref, name_style=style).colorists_sl, [want])
+real = tbf.query_issue(yjc_ref, name_style=tbf.NAME_REAL)
+check('no separate real name: name kept', (real.pencillers_sl, real.writers_sl),
+      ([u'N\xe9vil'], ['Alfred De Montesquiou']))
+b = scrape(yjc, fake_book(), copy_penciller_to_inker_b=True,
+           copy_penciller_to_cover_artist_b=True, copy_penciller_to_colorist_b=True)
+check('dibujante -> inker, cover artist', (b.Inker, b.CoverArtist), (u'N\xe9vil',) * 2)
+check('credited colorist not replaced', b.Colorist, u'1ver2\xe2nes')
+b = scrape(yjc, fake_book())
+check('Publisher on the book', b.Publisher, 'Reservoir Books')
+print('--- credit name styles (offline)')
+cn_ = tbf._credit_name
+dub = ('DuBouillon -Alain Bouillon-', 'DUBOUILLON')
+check('signature, site casing', cn_(*dub), 'DuBouillon')
+check('real name', cn_(*dub, style=tbf.NAME_REAL), 'Alain Bouillon')
+check('signature (real name)', cn_(*dub, style=tbf.NAME_SIGNATURE_REAL),
+      'DuBouillon (Alain Bouillon)')
+check('real name (signature)', cn_(*dub, style=tbf.NAME_REAL_SIGNATURE),
+      'Alain Bouillon (DuBouillon)')
+check('no real name in the title', cn_('ANA', 'ANA', tbf.NAME_SIGNATURE_REAL), 'Ana')
+check('real name same as signature',
+      cn_(u'N\xe9vil - -N\xe9vil-', u'N\xc9VIL -', tbf.NAME_SIGNATURE_REAL), u'N\xe9vil')
+print('--- name casing: initials stay upper-case')
+for raw, want in [('JMV', 'JMV'), ('JOSE A. SERRANO', 'Jose A. Serrano'),
+                  ('J.M. BEAZ', 'J.M. Beaz'), ('L. BERMEJO', 'L. Bermejo'),
+                  ('JOSE A SERRANO', 'Jose A Serrano'),
+                  ('ORTEGA Y GASSET', 'Ortega y Gasset'),
+                  ('PUIG I CADAFALCH', 'Puig i Cadafalch'),
+                  ('MARI CARMEN DE LA FUENTE', 'Mari Carmen de la Fuente'),
+                  ('GLYNN', 'Glynn'), ('Mari Carmen Otero', 'Mari Carmen Otero')]:
+    check('name ' + raw, utils.smart_name(raw), want)
+check('titles unchanged', utils.smart_title('JMV'), 'Jmv')
+print('--- smart credit name styles (offline, titles as the site gives them)')
+SR, RS = tbf.NAME_SIGNATURE_REAL_SMART, tbf.NAME_REAL_SIGNATURE_SMART
+for title, text, want_sr, want_rs in [
+        # signature word inside the name: surnames after it dropped
+        ('MONTEYS -Albert Monteys Homar-', 'MONTEYS',
+         'Monteys (Albert Monteys)', 'Albert Monteys'),
+        # the shortened name is the signature: said once
+        (u'FERM\xcdN SOL\xcdS -Ferm\xedn Sol\xeds Campos-', u'FERM\xcdN SOL\xcdS',
+         u'Ferm\xedn Sol\xeds', u'Ferm\xedn Sol\xeds'),
+        # an initial says no more than the name
+        ('MANEL F. -Manel Fontdevila Subirana-', 'MANEL F.',
+         'Manel F. (Manel Fontdevila)', 'Manel Fontdevila'),
+        ('JOSE A. SERRANO -Jose Antonio Serrano-', 'JOSE A. SERRANO',
+         'Jose A. Serrano (Jose Antonio Serrano)', 'Jose Antonio Serrano'),
+        # not taken from the name: whole name, both parts
+        (u'JMV -Jes\xfas Mart\xednez Del Vas-', 'JMV',
+         u'JMV (Jes\xfas Mart\xednez Del Vas)', u'Jes\xfas Mart\xednez Del Vas (JMV)'),
+        # one signature word in the name: cut there, the other word kept
+        (u'PEPO P\xc9REZ -Juan Carlos P\xe9rez Garc\xeda-', u'PEPO P\xc9REZ',
+         u'Pepo P\xe9rez (Juan Carlos P\xe9rez)', u'Juan Carlos P\xe9rez (Pepo P\xe9rez)'),
+        # a given name (two parts still after it): not cut there
+        (u'Daniel Ausente -Jorge Daniel Fern\xe1ndez Castany-', 'DANIEL AUSENTE',
+         u'Daniel Ausente (Jorge Daniel Fern\xe1ndez Castany)',
+         u'Jorge Daniel Fern\xe1ndez Castany (Daniel Ausente)'),
+        # particles join the next word: Del Vas, San Martin are one part each
+        (u'MART\xcdNEZ -Jes\xfas Mart\xednez Del Vas-', u'MART\xcdNEZ',
+         u'Mart\xednez (Jes\xfas Mart\xednez)', u'Jes\xfas Mart\xednez'),
+        (u'OCTAVIO BEARES -Octavio Beares San Mart\xedn-', 'OCTAVIO BEARES',
+         'Octavio Beares', 'Octavio Beares'),
+        # just the first name: whole name, both parts
+        ('GUILLERMO -Guillermo Torres Meana-', 'GUILLERMO',
+         'Guillermo (Guillermo Torres Meana)', 'Guillermo Torres Meana (Guillermo)'),
+        # a short form of a surname is kept
+        (u'FER -Jos\xe9 Antonio Fern\xe1ndez Fern\xe1ndez-', 'FER',
+         u'Fer (Jos\xe9 Antonio Fern\xe1ndez)', u'Jos\xe9 Antonio Fern\xe1ndez (Fer)'),
+        # accents differ only: the real name's spelling
+        ('ALBERTO GARCIA -Alberto Garc\xeda Marcos-', 'ALBERTO GARCIA',
+         u'Alberto Garc\xeda', u'Alberto Garc\xeda'),
+        # no real name
+        ('BORJA CRESPO', 'BORJA CRESPO', 'Borja Crespo', 'Borja Crespo')]:
+    check(text + ', signature first', cn_(title, text, SR), want_sr)
+    check(text + ', real name first', cn_(title, text, RS), want_rs)
+check('non-smart style unchanged',
+      cn_('MONTEYS -Albert Monteys Homar-', 'MONTEYS', tbf.NAME_REAL_SIGNATURE),
+      'Albert Monteys Homar (Monteys)')
+print('--- ilustrador credits')
+for label in ('Ilustrador', 'Ilustradora 2', 'Ilustradores'):
+    check(label, tbf._credit_type(label), 'penciller')
+il_page = (u'<div id="cuerpo2_ficha"><div class="row-fluid tab_datos"><span class="tab_subtitulo">'
+           u'Ilustradora <span class="peque">1</span></span>: '
+           u'<a href="/autores/x.html" title="EVA">EVA</a></div></div>')
+il = sys.modules['dbmodels'].Issue(tbf.IssueRef('1', 'z', url_s='http://x'))
+tbf.parse_issue_page(il_page, il)
+check('ilustradora is the penciller', (il.pencillers_sl, il.inkers_sl), (['Eva'], []))
+b = scrape(il, fake_book(), copy_penciller_to_inker_b=True)
+check('ilustrador -> inker by the copy setting', b.Inker, 'Eva')
+print('--- credit name style setting')
+check('default', cfgmod.Configuration().credit_name_style_n, 0)
+cfgmod.load_map = lambda p: {'credit_name_style_n': 3}
+check('saved value read', cfgmod.Configuration().credit_name_style_n, 3)
+cfgmod.load_map = lambda p: {'credit_name_style_n': 5}
+check('smart style read', cfgmod.Configuration().credit_name_style_n, 5)
+cfgmod.load_map = lambda p: {'credit_name_style_n': 9}
+check('out of range -> default', cfgmod.Configuration().credit_name_style_n, 0)
+cfgmod.load_map = lambda p: {}
 print('--- summary: description + synopsis (div_recension)')
 cn = tbf.query_issue(tbf.IssueRef('1', 'x', url_s=
      'https://www.tebeosfera.com/numeros/cuando_no_sabes_que_decir_2023_andana.html'))

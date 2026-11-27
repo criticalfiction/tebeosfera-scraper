@@ -81,6 +81,11 @@ class Configuration(object):
     # --- Search/scrape behavior ---
     max_search_results_n = 25
     scrape_delay_n = 2  # seconds between scraping books
+    # How to write credits whose author has a signature different from
+    # their real name: 0 signature, 1 real name, 2 "signature (real name)",
+    # 3 "real name (signature)", 4 and 5 the same two shortened
+    # (see tbfscraper.NAME_*).
+    credit_name_style_n = 0
 
     # --- Advanced settings (parsed from advanced_settings_s) ---
     advanced_settings_s = ''
@@ -114,7 +119,7 @@ class Configuration(object):
     _OLD_COPY_PENCILLER_KEY = 'copy_penciller_credits_b'
 
     _INT_KEYS = [
-        'max_search_results_n', 'scrape_delay_n',
+        'max_search_results_n', 'scrape_delay_n', 'credit_name_style_n',
     ]
 
     # =========================================================================
@@ -131,6 +136,8 @@ class Configuration(object):
         for key in self._INT_KEYS:
             if key in data:
                 setattr(self, key, int(data[key]))
+        if not 0 <= self.credit_name_style_n <= 5:
+            self.credit_name_style_n = 0
 
         # Settings saved before the penciller copy option was split in three
         # carry over to all three.

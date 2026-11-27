@@ -360,6 +360,38 @@ _ROMAN = re.compile(r'^(?=[IVX]{2,}$)X{0,3}(IX|IV|V?I{0,3})$')
 _WORD_START = re.compile(r'(^|[^\w])(\w)', re.UNICODE)
 
 
+# Initials: "A.", "J.M." (a letter and a full stop, repeated)
+_INITIALS = re.compile(r'^(\w\.)+$', re.UNICODE)
+# Single letters that are words in names, not initials ("Ortega y Gasset",
+# Catalan "Puig i Cadafalch")
+_NAME_LETTER_WORDS = frozenset(['y', 'i', 'e'])
+def smart_name(text):
+    '''
+    smart_title for people's names, which keeps initials upper-case:
+    "JOSE A. SERRANO" -> "Jose A. Serrano" (not "Jose a. Serrano"),
+    "JMV" -> "JMV" (a word with no vowels is an initialism, not "Jmv").
+    Text that already has lower-case letters is returned unchanged.
+    '''
+    if not is_all_caps(text):
+        return text
+    out = []
+    words = zip(text.split(' '), smart_title(text).split(' '))
+    for i, (word, cased) in enumerate(words):
+        bare = word.strip(u',;:()[]"\'!?\xa1\xbf')
+        letters = strip_accents(bare).lower()
+        if _INITIALS.match(bare):
+            out.append(word)
+        elif len(bare) == 1 and bare.isalpha():
+            if i > 0 and letters in _NAME_LETTER_WORDS:
+                out.append(word.lower())
+            else:
+                out.append(word)
+        elif len(bare) > 1 and bare.isalpha() and \
+                not any(c in 'aeiouy' for c in letters):
+            out.append(word)
+        else:
+            out.append(cased)
+    return ' '.join(out)
 def is_all_caps(text):
     '''True if text has letters and none of them are lower-case.'''
     letters = [c for c in (text or '') if c.isalpha()]

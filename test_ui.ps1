@@ -21,8 +21,14 @@ $engine.Runtime.IO.SetOutput($stream, [Text.Encoding]::UTF8)
 try {
     $engine.ExecuteFile((Join-Path $PSScriptRoot 'test_ui.py')) | Out-Null
 } catch {
-    $ops = $engine.GetService([Microsoft.Scripting.Hosting.ExceptionOperations])
-    Write-Output ('PYTHON ERROR: ' + $ops.FormatException($_.Exception.InnerException))
+    # GetService is generic (GetService<T>), which PowerShell 5.1 can't call
+    # directly, so it's called through reflection.
+    $err = $_.Exception
+    if ($err.InnerException) { $err = $err.InnerException }
+    $getService = $engine.GetType().GetMethod('GetService').MakeGenericMethod(
+        [Microsoft.Scripting.Hosting.ExceptionOperations])
+    $ops = $getService.Invoke($engine, @(, [object[]]@()))
+    Write-Output ('PYTHON ERROR: ' + $ops.FormatException($err))
 }
 [Text.Encoding]::UTF8.GetString($stream.ToArray())
 "screenshots in $out"

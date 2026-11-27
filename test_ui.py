@@ -197,6 +197,22 @@ utils.invoke(form, lambda: snapshot(form, OUT + '\\status_window.png'), True)
 form.close_threadsafe()
 pump(1)
 
+# ------------------------------------------------- credit names (IronPython)
+for style, want in [(tbfscraper.NAME_SIGNATURE_REAL_SMART, u'Fer (Jos\xe9 Antonio Fern\xe1ndez)'),
+                    (tbfscraper.NAME_REAL_SIGNATURE_SMART, u'Manel Fontdevila')]:
+    title, text = {tbfscraper.NAME_SIGNATURE_REAL_SMART:
+                       (u'FER -Jos\xe9 Antonio Fern\xe1ndez Fern\xe1ndez-', u'FER'),
+                   tbfscraper.NAME_REAL_SIGNATURE_SMART:
+                       (u'MANEL F. -Manel Fontdevila Subirana-', u'MANEL F.')}[style]
+    got = tbfscraper._credit_name(title, text, style)
+    check('smart credit name, style %d' % style, got == want, repr(got))
+got = tbfscraper._credit_name(u'PEPO P\xc9REZ -Juan Carlos P\xe9rez Garc\xeda-',
+                              u'PEPO P\xc9REZ', tbfscraper.NAME_REAL_SIGNATURE_SMART)
+check('smart credit name, word not in the name skipped',
+      got == u'Juan Carlos P\xe9rez (Pepo P\xe9rez)', repr(got))
+got = tbfscraper._credit_name(u'JMV -Jes\xfas Mart\xednez Del Vas-', u'JMV',
+                              tbfscraper.NAME_SIGNATURE)
+check('initialism stays upper-case', got == u'JMV', repr(got))
 # ---------------------------------------------------------------- config
 # Opened and closed without OK, so the user's settings are not changed.
 from configform import ConfigForm
@@ -218,7 +234,83 @@ lowest = max(c.Bottom for c in page.Controls)
 check('config: all Credits options inside the tab',
       lowest <= page.ClientSize.Height, '%d <= %d' % (lowest, page.ClientSize.Height))
 snapshot(form, OUT + '\\config_credits.png')
+# the credit name style drop-down
+combo = form._ConfigForm__name_style
+check('config: name style choices',
+      list(combo.Items) == ['Signature', 'Real name', 'Signature (Real name)',
+                            'Real name (Signature)', 'Signature (Real name) [Smart]',
+                            'Real name (Signature) [Smart]'], list(combo.Items))
+check('config: name style shows the saved setting',
+      combo.SelectedIndex == form._ConfigForm__config.credit_name_style_n,
+      combo.SelectedIndex)
+from System.Drawing import Font, Size as DSize
+from System.Windows.Forms import CheckBox as WCheckBox, Label as WLabel, \
+    TextRenderer, TextFormatFlags
+def text_cut_off(c):
+    '''None if c shows all its text, else why not.'''
+    if isinstance(c, WLabel):
+        need = c.GetPreferredSize(DSize(c.Width, 0)).Height
+        return None if c.Height >= need else 'needs %d px, has %d' % (need, c.Height)
+    one_line = c.GetPreferredSize(DSize.Empty)
+    text = TextRenderer.MeasureText(c.Text, c.Font)
+    box = one_line.Width - text.Width
+    wrapped = TextRenderer.MeasureText(c.Text, c.Font, DSize(c.Width - box, 0),
+                                       TextFormatFlags.WordBreak)
+    return None if c.Height >= wrapped.Height else \
+        'text needs %d px, has %d' % (wrapped.Height, c.Height)
+def check_tab_text(when, index):
+    tabs.SelectedIndex = index
+    pump(1)
+    page = tabs.TabPages[index]
+    controls = sorted(page.Controls, key=lambda c: c.Top)
+    cut = [(c.Text[:30], text_cut_off(c)) for c in controls
+           if isinstance(c, (WLabel, WCheckBox)) and text_cut_off(c)]
+    check('%s: %s text all shown' % (when, page.Text), not cut, cut)
+    overlaps = [(a.Text[:20], b.Text[:20]) for a, b in zip(controls, controls[1:])
+                if b.Top < a.Bottom]
+    check('%s: %s controls don\'t overlap' % (when, page.Text), not overlaps, overlaps)
+    lowest = max(c.Bottom for c in controls)
+    check('%s: %s controls inside the tab' % (when, page.Text),
+          lowest <= page.ClientSize.Height, (lowest, page.ClientSize.Height))
+    return page
+for index in (1, 2):
+    check_tab_text('config', index)
+# The reported cut-off: the font scaled for a larger display but the layout
+# not (the name style label wrapped "as:" onto a hidden second line, and
+# other text was cut off too). Done by making the font 1.5 times bigger:
+# in Dpi scaling mode that doesn't move or resize anything.
+form.Font = Font(form.Font.FontFamily, form.Font.Size * 1.5)
+for index in (1, 2):
+    page = check_tab_text('config 150% text', index)
+    snapshot(form, OUT + '\\config_%s_150_text.png' % page.Text.lower())
 form.Close()
+pump(1)
+# OK saves the chosen style. Settings go to temporary files, so the user's
+# own settings are not changed.
+# (.NET, not os/tempfile: ComicRack's IronPython has no standard library)
+from System.IO import Path, Directory
+from configuration import Configuration
+saved = (Resources.SETTINGS_FILE, Resources.ADVANCED_FILE)
+tmp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName())
+Directory.CreateDirectory(tmp)
+Resources.SETTINGS_FILE = Path.Combine(tmp, 'settings.dat')
+Resources.ADVANCED_FILE = Path.Combine(tmp, 'advanced.dat')
+try:
+    check('config: name style defaults to Signature',
+          Configuration().credit_name_style_n == 0,
+          Configuration().credit_name_style_n)
+    for index in (1, 2, 3, 4, 5, 0):
+        form = ConfigForm(None)
+        form.Show()
+        form._ConfigForm__name_style.SelectedIndex = index
+        form._ConfigForm__on_ok(None, None)
+        pump(1)
+        check('config: OK saves name style %d' % index,
+              Configuration().credit_name_style_n == index,
+              Configuration().credit_name_style_n)
+finally:
+    Resources.SETTINGS_FILE, Resources.ADVANCED_FILE = saved
+    Directory.Delete(tmp, True)
 pump(1)
 
 print('%d failure(s)' % results.count(False))

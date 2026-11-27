@@ -56,11 +56,6 @@ RE_COVER_IMG = re.compile(
     r'<img\s+id="img_principal"[^>]*\ssrc="([^"]*)"',
     re.IGNORECASE)
 
-# Issue page: title in <div class="titulo">
-RE_ISSUE_TITLE = re.compile(
-    r'<div\s+id="titulo_ficha"[^>]*>\s*<div\s+class="titulo"[^>]*>(.*?)</div>',
-    re.DOTALL | re.IGNORECASE)
-
 # Author blocks: <div class="tab_datos ..."><span class="tab_subtitulo">ROLE ...</span>: ... <a ...>NAME</a> ...
 RE_AUTHOR_BLOCK = re.compile(
     r'<div\s+class="row-fluid\s+tab_datos[^"]*"[^>]*>'
@@ -100,6 +95,16 @@ RE_ISBN = re.compile(r'ISBN:\s*([0-9Xx\-]+)', re.IGNORECASE)
 # Page count pattern (e.g. "52 pags." or "96 pp.")
 RE_PAGES = re.compile(r'(\d+)\s*(?:p(?:\xe1|a)gs?|pp)', re.IGNORECASE)
 
+# How to write a credit whose page lists both a signature and a real name.
+NAME_SIGNATURE = 0            # "Vignette"
+NAME_REAL = 1                 # "Jane Doe"
+NAME_SIGNATURE_REAL = 2       # "Vignette (Jane Doe)"
+NAME_REAL_SIGNATURE = 3       # "Jane Doe (Vignette)"
+# As the two above, but without repeating what the other part already says
+# and without real-name surnames the signature doesn't need (see
+# _smart_credit).
+NAME_SIGNATURE_REAL_SMART = 4
+NAME_REAL_SIGNATURE_SMART = 5
 # Author roles -> ComicRack credits. Matched as prefixes of the role label
 # after accents, counts and case are removed ("Guionistas 2" -> "guionistas",
 # "Directora de publicacion" -> "directora de publicacion"), so singular,
@@ -109,6 +114,7 @@ ROLE_STEMS = [
     ('argumentista', 'writer'),
     ('historietista', 'all'),        # does all of it: see parse_authors
     ('dibujant', 'penciller'),       # dibujante(s), dibujanta
+    ('ilustrador', 'penciller'),     # ilustrador(a)(es), treated as dibujante
     ('portadista', 'cover_artist'),
     ('colorista', 'colorist'),
     ('entintad', 'inker'),           # entintador(a)(es)
@@ -542,7 +548,7 @@ def query_issue_ref(series_ref, issue_num_s):
 
 
 # ===========================================================================
-def query_issue(issue_ref, slow_data=False):
+def query_issue(issue_ref, slow_data=False, name_style=NAME_SIGNATURE):
     '''
     Fetches the full issue details from tebeosfera.com and returns an
     Issue object populated with all available metadata.
@@ -560,7 +566,7 @@ def query_issue(issue_ref, slow_data=False):
 
     try:
         html = fetch_url(issue_ref.url_s)
-        parse_issue_page(html, issue)
+        parse_issue_page(html, issue, name_style)
 
         # Also fetch the collection page for series-level data
         # (publisher, genre, characters, synopsis) if available
@@ -796,7 +802,41 @@ def _black_and_white(color_field_text, summary):
 
 
 # ===========================================================================
-def parse_issue_page(html, issue):
+def _issue_title(heading):
+    """
+    The title from an issue page's heading (the inner HTML of its
+    <div class="titulo">). The heading is either just a title ("MIEDO"),
+    or the series in grey, a line break, then the issue's own title:
+      <span ...>EL CAPITAN TRUENO</span><br>EL COMBATE POR SIGRIDSHOLM
+    Either can be followed by a note on the edition in a <div> of its own:
+      CALAVERA LUNAR<div><strong>especial 25 aniversario</strong></div>
+    The note is then the title ("Especial 25 aniversario"), as the text
+    before it is just the series name. After an own title it's added in
+    brackets: "El Combate por Sigridsholm (Nota)".
+    """
+    main, notes, pos = [], [], 0
+    for m in re.finditer(r'(?i)<div\b', heading or ''):
+        if m.start() < pos:
+            continue                  # inside a note already taken
+        inner = _div_inner(heading, m.start())
+        main.append(heading[pos:m.start()])
+        # the inner HTML starts after the tag and ends at its </div>
+        end = heading.find('>', m.start()) + 1 + len(inner)
+        close = RE_DIV_TAG.search(heading, end)
+        pos = close.end() if close else len(heading)
+        note = _text(inner)
+        if note:
+            notes.append(utils.smart_title(note))
+    main.append((heading or '')[pos:])
+    parts = re.split(r'(?i)<br\s*/?>', ''.join(main), 1)
+    own = _text(parts[1]) if len(parts) > 1 else ''
+    notes = [n[:1].upper() + n[1:] for n in notes]
+    if own:
+        return ' '.join([utils.smart_title(own)] + ['(%s)' % n for n in notes])
+    if notes:
+        return ' '.join([notes[0]] + ['(%s)' % n for n in notes[1:]])
+    return utils.smart_title(_text(parts[0]))
+def parse_issue_page(html, issue, name_style=NAME_SIGNATURE):
     """
     Parses an issue (numero) page and fills in the given Issue.
     Everything except the title and cover is read from the cuerpo2_ficha
@@ -805,14 +845,9 @@ def parse_issue_page(html, issue):
     if not html:
         return
 
-    # The title block is either just a title ("MIEDO"), or the series in
-    # grey, a line break, then the issue's own title:
-    #   <span ...>EL CAPITAN TRUENO</span><br>EL COMBATE POR SIGRIDSHOLM
-    m = RE_ISSUE_TITLE.search(html)
-    if m:
-        parts = re.split(r'(?i)<br\s*/?>', m.group(1), 1)
-        own = _text(parts[1]) if len(parts) > 1 else ''
-        issue.title_s = utils.smart_title(own or _text(parts[0]))
+    title = _issue_title(_div_by_class(_div_by_id(html, 'titulo_ficha'), 'titulo'))
+    if title:
+        issue.title_s = title
 
     body = _div_by_id(html, 'cuerpo2_ficha')
 
@@ -824,11 +859,22 @@ def parse_issue_page(html, issue):
         issue.series_key = coll.group(1)
         issue.series_name_s = utils.smart_title(_text(coll.group(2)))
 
-    # The first entity link is the publisher (later ones in the block are
-    # the distributor and printer).
-    entities = _link_texts(body, 'entidades')
+    # The publisher row follows the header row, up to the first spacer div
+    # (later entity links are the distributor, printer, etc). It is
+    # "GROUP : LABEL" when the label belongs to a group
+    # ("Penguin Random House Grupo : Reservoir Books"); the label is the
+    # publisher.
+    row = body[head_m.end():] if head_m else body
+    spacer = row.find('clear:both')
+    if spacer != -1:
+        row = row[:spacer]
+    entities = _link_texts(row, 'entidades')
     if entities:
-        issue.publisher_s = _publisher_name(entities[0])
+        issue.publisher_s = _publisher_name(entities[-1])
+    else:
+        entities = _link_texts(body, 'entidades')
+        if entities:
+            issue.publisher_s = _publisher_name(entities[0])
 
     fields = _data_fields(body)
     _apply_date(_text(fields.get('distribucion')), issue)
@@ -843,7 +889,8 @@ def parse_issue_page(html, issue):
     if m:
         issue.isbn_s = m.group(1)
 
-    all_rounders = parse_authors(fields.get('autores') or body, issue)
+    all_rounders = parse_authors(fields.get('autores') or body, issue,
+                                name_style)
 
     cover = _main_cover_url(html)
     if cover:
@@ -873,24 +920,138 @@ def _credit_type(role_label):
     return None
 
 
-def _credit_name(title_attr, display_html):
+def _real_name(title_attr):
     """
-    The best-cased form of an author's name. Links look like
+    The real name in an author link's title, "Signature -Real Name-", or ''
+    if the title has none. The signature itself may end in a dash
+    ("Nevil - -Nevil-").
+    """
+    parts = html_decode(title_attr or '').split(' -', 1)
+    return parts[1].strip(u' -') if len(parts) > 1 else ''
+def _same_name(a, b):
+    return utils.strip_accents(a).lower() == utils.strip_accents(b).lower()
+def _credit_name(title_attr, display_html, style=NAME_SIGNATURE):
+    """
+    An author's name in the requested style. Links look like
       <a title="DuBouillon -Alain Bouillon-">DUBOUILLON</a>
-    so the part of the title before " -" is the same name with the site's
-    own casing; use it unless it's ALL CAPS too, then title-case the text.
+    The text is the signature the author works under, in ALL CAPS. The part
+    of the title before " -" is the same signature with the site's own
+    casing (used unless it's ALL CAPS too, then the text is title-cased),
+    and the part between the dashes is the real name. When the title gives
+    no different real name, the signature is used on its own.
     """
-    display = _text(display_html)
+    # Some names are listed with a dangling dash ("NEVIL -"), which
+    # is not part of the name.
+    display = _text(display_html).strip(u' -')
     if not display:
         return ''
     alias = html_decode(title_attr or '').split(' -')[0].strip()
-    same = utils.strip_accents(alias).lower() == utils.strip_accents(display).lower()
-    if alias and same and not utils.is_all_caps(alias):
-        return alias
-    return utils.smart_title(display)
-
-
-def parse_authors(html, issue):
+    if alias and _same_name(alias, display) and not utils.is_all_caps(alias):
+        signature = alias
+    else:
+        signature = utils.smart_name(display)
+    real = utils.smart_name(_real_name(title_attr))
+    if not real or _same_name(real, signature) or style == NAME_SIGNATURE:
+        return signature
+    if style == NAME_REAL:
+        return real
+    if style == NAME_REAL_SIGNATURE:
+        return '%s (%s)' % (real, signature)
+    if style in (NAME_SIGNATURE_REAL_SMART, NAME_REAL_SIGNATURE_SMART):
+        return _smart_credit(signature, real,
+                             style == NAME_REAL_SIGNATURE_SMART)
+    return '%s (%s)' % (signature, real)
+def _name_key(word):
+    """'Fernandez,' -> 'fernandez' (accents gone too): for comparing names."""
+    return RE_NOT_WORD.sub('', utils.strip_accents(word).lower())
+RE_NOT_WORD = re.compile(r'\W', re.UNICODE)
+# Words that belong to the surname after them ("Del Vas", "de la Fuente",
+# "San Martin")
+_NAME_PARTICLES = frozenset(
+    'de del la las los y i e da das do dos van von der den di du le '
+    'san santa santo'.split())
+def _name_parts(real):
+    """
+    The parts of a real name, each a list of words: a particle goes with
+    the word after it. "Jesus Martinez Del Vas" -> Jesus | Martinez |
+    Del Vas.
+    """
+    parts, pending = [], []
+    for word in real.split():
+        pending.append(word)
+        if _name_key(word) not in _NAME_PARTICLES:
+            parts.append(pending)
+            pending = []
+    if pending:                       # a particle at the very end
+        if parts:
+            parts[-1].extend(pending)
+        else:
+            parts.append(pending)
+    return parts
+def _match_signature(signature, parts):
+    """
+    Lines the signature's words up with the real name's parts, in order.
+    A signature word matches a word of the name ("Monteys"), an initial of
+    one ("F." for Fontdevila) or the start of one ("Fer" for Fernandez);
+    a word that isn't in the name ("Pepo" in Pepo Perez) is skipped.
+    Returns (index of the last part matched, True if every signature word
+    is a whole word or an initial of the name), or None if no word matches
+    ("JMV").
+    """
+    words = [(i, w) for i, part in enumerate(parts) for w in part]
+    pos, last, contained = -1, -1, True
+    for word in signature.split():
+        key = _name_key(word)
+        if not key:
+            continue
+        for at in range(pos + 1, len(words)):
+            part, name_word = words[at]
+            name = _name_key(name_word)
+            if key == name:
+                break
+            if name.startswith(key) and name not in _NAME_PARTICLES:
+                # an initial or abbreviation ("F.", "Fdez.") says no more
+                # than the name; a short form ("Fer") is a name of its own
+                if not (len(key) == 1 or word.endswith('.')):
+                    contained = False
+                break
+        else:
+            contained = False         # not in the name
+            continue
+        pos, last = at, part
+    return (last, contained) if last >= 0 else None
+def _smart_credit(signature, real, real_first):
+    """
+    "Signature (Real name)" or "Real name (Signature)", shortened:
+    - The real name stops at the last part the signature uses, which drops
+      surnames the signature doesn't need: Monteys / Albert Monteys Homar
+      -> "Albert Monteys"; Pepo Perez / Juan Carlos Perez Garcia ->
+      "Juan Carlos Perez".
+    - It is never cut at a given name. A part with two or more parts still
+      after it can't be a surname, as Spanish names end in two surnames
+      (Daniel Ausente / Jorge Daniel Fernandez Castany keeps the whole
+      name), and neither can the first part (Guillermo / Guillermo Torres
+      Meana).
+    - When the signature says nothing the name doesn't, it's left out:
+      Fermin Solis / Fermin Solis Campos -> "Fermin Solis";
+      Manel F. / Manel Fontdevila Subirana -> "Manel Fontdevila" (real
+      name first) or "Manel F. (Manel Fontdevila)". A short form or a word
+      of its own is kept: "Jose Antonio Fernandez (Fer)".
+    - A signature not taken from the real name ("JMV") gets the whole name.
+    """
+    parts = _name_parts(real)
+    match = _match_signature(signature, parts)
+    if not match or match[0] == 0 or match[0] < len(parts) - 2:
+        name, contained = real, False
+    else:
+        name = ' '.join(w for part in parts[:match[0] + 1] for w in part)
+        contained = match[1]
+    if _same_name(name, signature):
+        return name
+    if real_first:
+        return name if contained else '%s (%s)' % (name, signature)
+    return '%s (%s)' % (signature, name)
+def parse_authors(html, issue, name_style=NAME_SIGNATURE):
     """
     Adds the credits in the issue's "Autores" rows to the Issue. Each row is
       <div class="row-fluid tab_datos ..."><span class="tab_subtitulo">ROLE
@@ -911,7 +1072,7 @@ def parse_authors(html, issue):
         credit = _credit_type(role.group(1)) if role else None
         if not credit:
             continue
-        names = [n for n in (_credit_name(m.group(1), m.group(2))
+        names = [n for n in (_credit_name(m.group(1), m.group(2), name_style)
                              for m in RE_AUTHOR_LINK.finditer(block.group(1))) if n]
         for attr in lists[credit]:
             setattr(issue, attr, _merge(getattr(issue, attr), names))
